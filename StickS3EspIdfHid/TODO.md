@@ -25,4 +25,5 @@
 - [x] ESP-IDF BLE keyboard and consumer-control reports work with macOS and iPhone.
 - [x] iPhone camera shutter via volume key.
 - [x] Joystick2 at I2C `0x63` on GPIO9/GPIO10, including four directions, click, and hold.
-- [x] LCD auto-sleep, adaptive Joystick2 polling, RGB off, idle power gating, CPU DFS, and BLE modem sleep.
+- [x] LCD auto-sleep, BMI270 25Hz low-power pickup/flip wake with a tested `0.32g` threshold, adaptive Joystick2 polling, RGB off, idle power gating, CPU DFS, and BLE modem sleep.
+- [x] Sequence Joystick2 power restoration before LCD wake to prevent combined inrush from causing a brownout.

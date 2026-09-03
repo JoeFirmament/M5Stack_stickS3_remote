@@ -24,9 +24,14 @@ constexpr uint32_t kJoystickHoldMs = 850;
 constexpr uint32_t kJoystickActivePollMs = 20;
 constexpr uint32_t kJoystickIdlePollMs = 100;
 constexpr uint32_t kJoystickActiveWindowMs = 2000;
+constexpr uint32_t kMotionPollMs = 100;
+constexpr uint32_t kMotionArmDelayMs = 600;
+constexpr float kMotionThresholdG = 0.32f;
+constexpr uint8_t kMotionSamplesRequired = 2;
 
 const char *const kJoystickTag = "Joystick2";
 const char *const kPowerTag = "Power";
+const char *const kMotionTag = "Motion";
 
 bool joystickConnected = false;
 bool joystickDetected = false;
@@ -43,6 +48,14 @@ stick_s3_event_t joystickDirection = STICK_S3_EVENT_NONE;
 bool displayAwake = true;
 uint32_t lastUserActivityMs = 0;
 uint32_t lastPowerLogMs = 0;
+bool motionSensorReady = false;
+bool motionBaselineValid = false;
+float motionBaselineX = 0.0f;
+float motionBaselineY = 0.0f;
+float motionBaselineZ = 0.0f;
+uint32_t motionArmedAtMs = 0;
+uint32_t motionLastPollMs = 0;
+uint8_t motionHitCount = 0;
 
 constexpr uint16_t kBackground = 0x0861;
 constexpr uint16_t kSurface = 0x10E4;
@@ -115,6 +128,97 @@ void resetJoystickState() {
     joystickDirection = STICK_S3_EVENT_NONE;
 }
 
+void noteUserActivity();
+
+bool configureMotionSensor() {
+    if (!M5.Imu.isEnabled() || M5.Imu.getType() != m5::imu_t::imu_bmi270) {
+        ESP_LOGW(kMotionTag, "BMI270 not available; A/B wake remains active");
+        return false;
+    }
+
+    auto *imu = M5.Imu.getImuInstancePtr(0);
+    if (imu == nullptr) {
+        ESP_LOGW(kMotionTag, "BMI270 instance unavailable");
+        return false;
+    }
+
+    // BMI270 low-power accelerometer: 25 Hz, low-power filter, gyro/temp/AUX
+    // disabled. The ESP32 remains awake at its DFS minimum so BLE stays paired;
+    // we only read the sensor at 10 Hz while the display is asleep.
+    bool ok = imu->writeRegister8(0x7C, 0x00);  // Disable advanced power save.
+    M5.delay(1);
+    ok = imu->writeRegister8(0x40, 0x26) && ok;  // ACC_CONF: 25 Hz LP.
+    ok = imu->writeRegister8(0x7D, 0x04) && ok;  // ACC on; gyro/temp/AUX off.
+    M5.delay(3);
+    ok = imu->writeRegister8(0x7C, 0x01) && ok;  // Advanced power save on.
+    M5.delay(1);
+
+    ESP_LOGI(kMotionTag,
+             "BMI270 low-power setup=%s addr=0x%02X acc_conf=0x%02X pwr_ctrl=0x%02X pwr_conf=0x%02X",
+             ok ? "ok" : "failed", imu->getAddress(), imu->readRegister8(0x40),
+             imu->readRegister8(0x7D), imu->readRegister8(0x7C));
+    return ok;
+}
+
+void armMotionWake(uint32_t now) {
+    motionBaselineValid = false;
+    motionHitCount = 0;
+    motionArmedAtMs = now;
+    motionLastPollMs = 0;
+}
+
+bool pollMotionWake(uint32_t now) {
+    if (!motionSensorReady || displayAwake ||
+        now - motionLastPollMs < kMotionPollMs) {
+        return false;
+    }
+    motionLastPollMs = now;
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if (!M5.Imu.getAccel(&x, &y, &z)) {
+        return false;
+    }
+
+    if (!motionBaselineValid) {
+        motionBaselineX = x;
+        motionBaselineY = y;
+        motionBaselineZ = z;
+        motionBaselineValid = true;
+        return false;
+    }
+    if (now - motionArmedAtMs < kMotionArmDelayMs) {
+        return false;
+    }
+
+    const float dx = x - motionBaselineX;
+    const float dy = y - motionBaselineY;
+    const float dz = z - motionBaselineZ;
+    const float deltaSquared = dx * dx + dy * dy + dz * dz;
+    const float thresholdSquared = kMotionThresholdG * kMotionThresholdG;
+    if (deltaSquared >= thresholdSquared) {
+        ++motionHitCount;
+        if (motionHitCount >= kMotionSamplesRequired) {
+            ESP_LOGI(kMotionTag, "Pickup detected delta2=%.3f; waking controls",
+                     static_cast<double>(deltaSquared));
+            motionBaselineValid = false;
+            motionHitCount = 0;
+            noteUserActivity();
+            return true;
+        }
+    } else {
+        motionHitCount = 0;
+        // A slow baseline follows temperature drift and tiny table vibration,
+        // but remains far slower than a normal pickup gesture.
+        constexpr float kBaselineFollow = 1.0f / 32.0f;
+        motionBaselineX += (x - motionBaselineX) * kBaselineFollow;
+        motionBaselineY += (y - motionBaselineY) * kBaselineFollow;
+        motionBaselineZ += (z - motionBaselineZ) * kBaselineFollow;
+    }
+    return false;
+}
+
 bool powerOnJoystick() {
     if (!joystickDetected || joystickPowered) return joystickConnected;
 
@@ -138,12 +242,18 @@ bool powerOnJoystick() {
 
 void noteUserActivity() {
     lastUserActivityMs = lgfx::millis();
+    // When both loads are asleep, restore the Grove rail first and wait for
+    // the Joystick2 MCU to settle before switching the LCD/backlight on. This
+    // avoids stacking both inrush currents and tripping the brownout detector
+    // on a partly discharged battery.
+    powerOnJoystick();
     if (!displayAwake) {
         M5.Display.wakeup();
         displayAwake = true;
+        motionBaselineValid = false;
+        motionHitCount = 0;
         ESP_LOGI(kPowerTag, "Display awake");
     }
-    powerOnJoystick();
 }
 
 void initJoystick() {
@@ -510,7 +620,7 @@ extern "C" void stick_s3_ui_init(void) {
     // enough time to boot before its first I2C probe. It is switched off below
     // when no module is found, and after the normal idle timeout.
     config.output_power = true;
-    config.internal_imu = false;
+    config.internal_imu = true;
     config.internal_rtc = false;
     config.internal_mic = false;
     config.internal_spk = false;
@@ -524,6 +634,7 @@ extern "C" void stick_s3_ui_init(void) {
     M5.Display.clear(kBackground);
     lastUserActivityMs = lgfx::millis();
     lastPowerLogMs = lastUserActivityMs;
+    motionSensorReady = configureMotionSensor();
     initJoystick();
 }
 
@@ -539,6 +650,7 @@ extern "C" stick_s3_event_t stick_s3_ui_poll(void) {
     if (displayAwake && now - lastUserActivityMs >= kDisplaySleepMs) {
         M5.Display.sleep();
         displayAwake = false;
+        armMotionWake(now);
         ESP_LOGI(kPowerTag, "Display asleep after %u ms", kDisplaySleepMs);
     }
 
@@ -550,8 +662,12 @@ extern "C" stick_s3_event_t stick_s3_ui_poll(void) {
         joystickConnected = false;
         resetJoystickState();
         ESP_LOGI(kPowerTag,
-                 "Joystick power off after %u ms; press A or B to restore",
+                 "Joystick power off after %u ms; move device or press A/B to restore",
                  kJoystickPowerSaveMs);
+    }
+
+    if (pollMotionWake(now)) {
+        return STICK_S3_EVENT_WAKE;
     }
 
     if (now - lastPowerLogMs >= kPowerLogMs) {

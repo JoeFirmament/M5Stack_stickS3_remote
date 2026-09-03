@@ -694,6 +694,13 @@ static void handle_ui_event(stick_s3_event_t event)
         return;
     }
 
+    if (event == STICK_S3_EVENT_WAKE) {
+        // A motion wake has no HID side effect; it only restores the UI and
+        // (when fitted) powers the Joystick2 back up.
+        s_ui_dirty = true;
+        return;
+    }
+
     if (event == STICK_S3_EVENT_HOME) {
         if (s_ui_view == STICK_S3_VIEW_SELECT) {
             s_ui_view = STICK_S3_VIEW_ACTIVE;
