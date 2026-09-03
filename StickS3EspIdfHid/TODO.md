@@ -14,6 +14,8 @@
 
 - [ ] Give Mac, iPhone, and other HID host profiles separate Bluetooth identities to prevent the wrong host from auto-reconnecting.
 - [ ] Keep the Reader profile available; CrossMux currently lacks stable BLE HID host support.
+- [ ] Measure battery-side current for screen-on, screen-off, Joystick2-on, and Joystick2-off states.
+- [ ] Add selectable always-ready and maximum-runtime power profiles.
 - [ ] Implement the existing IR profile with StickS3's built-in IR transmitter and receiver.
   - Learn and store named commands for TV, air conditioner, amplifier, and other appliances.
   - Disable the speaker amplifier while receiving, use the ESP32 RMT peripheral, and guide the user to keep the remotes at least 30 cm apart during learning.
@@ -23,3 +25,4 @@
 - [x] ESP-IDF BLE keyboard and consumer-control reports work with macOS and iPhone.
 - [x] iPhone camera shutter via volume key.
 - [x] Joystick2 at I2C `0x63` on GPIO9/GPIO10, including four directions, click, and hold.
+- [x] LCD auto-sleep, adaptive Joystick2 polling, RGB off, idle power gating, CPU DFS, and BLE modem sleep.

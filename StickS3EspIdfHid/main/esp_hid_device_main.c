@@ -642,10 +642,12 @@ static void handle_joystick_event(stick_s3_event_t event)
             send_consumer_click(HID_CONSUMER_VOLUME_DOWN, "Joy down / Volume -");
             break;
         case STICK_S3_EVENT_JOY_LEFT:
-            send_consumer_click(HID_CONSUMER_SCAN_PREV_TRK, "Joy left / Previous");
+            // Standard Left/Right arrows are handled by most focused browser
+            // video players as seek backward/forward.
+            send_keyboard_click(0x50, "Joy left / Seek back");
             break;
         case STICK_S3_EVENT_JOY_RIGHT:
-            send_consumer_click(HID_CONSUMER_SCAN_NEXT_TRK, "Joy right / Next");
+            send_keyboard_click(0x4F, "Joy right / Seek forward");
             break;
         case STICK_S3_EVENT_JOY_CLICK:
             send_consumer_click(HID_CONSUMER_PLAY_PAUSE, "Joy click / Play");
@@ -770,7 +772,9 @@ static void stick_s3_remote_task(void *pvParameters)
                              s_reader_mapping, s_last_action);
             s_ui_dirty = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // 50 Hz is responsive for physical controls while allowing longer idle
+        // periods for dynamic frequency scaling and Bluetooth modem sleep.
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 #endif
